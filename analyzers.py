@@ -1,7 +1,9 @@
 """Core analysis engines for LogNorm."""
 import ast
 import hashlib
+import re
 from dataclasses import dataclass
+
 from typing import List, Tuple
 
 LOG_METHODS = {
@@ -143,3 +145,54 @@ def detect_mismatches(calls: List[LogCall]) -> List[Mismatch]:
                 c, 'info', f'mild message logged at {c.level}'
             ))
     return results
+
+
+def _normalize_message_template(message: str) -> str:
+    """Normalize log message template by replacing all variable placeholders with {}."""
+    # Replace %-style: %s, %d, %f
+    result = re.sub(r'%[sdf]', '{}', message)
+    # Replace .format()-style named/positional and f-string expressions: {name}, {0}, {expr}
+    result = re.sub(r'\{[^}]+\}', '{}', result)
+    return result
+
+
+def generate_fingerprints(source_code: str, filename: str) -> list:
+    """Generate structured fingerprints for each log statement in source code.
+
+    Returns list of dicts: {file, function_name, line, raw_message, fingerprint}.
+    Fingerprint = SHA-256[:12] of 'filename:function_name:normalized_message'.
+    """
+    calls, _ = extract(source_code, filename)
+    fingerprints = []
+    for call in calls:
+        normalized = _normalize_message_template(call.message)
+        key = f"{filename}:{call.func}:{normalized}"
+        fp = hashlib.sha256(key.encode()).hexdigest()[:12]
+        fingerprints.append({
+            'file': filename,
+            'function_name': call.func,
+            'line': call.line,
+            'raw_message': call.message,
+            'fingerprint': fp,
+        })
+    return fingerprints
+
+
+def find_fingerprint_collisions(fingerprints: list) -> list:
+    """Find groups where identical raw_message appears in different file:function locations.
+
+    Returns list of collision groups (each group is a list of fingerprint dicts).
+    Only reports messages that appear in >1 distinct file:function pair.
+    """
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for fp in fingerprints:
+        groups[fp['raw_message']].append(fp)
+
+    collisions = []
+    for raw_msg, items in groups.items():
+        locations = {(item['file'], item['function_name']) for item in items}
+        if len(locations) > 1:
+            collisions.append(items)
+
+    return collisions
