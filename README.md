@@ -40,6 +40,10 @@ Log messages with high TF-IDF cosine similarity across different locations.
 ### Fingerprint Collisions
 Identical messages in multiple locations that prevent tracing to source.
 
+### Missing Context
+Log calls in functions with `request_id`, `user_id`, `trace_id` etc. in scope
+that forget to include them — making post-incident correlation impossible.
+
 ## Output
 
 ```
@@ -49,6 +53,8 @@ Log calls found:    4
 Duplicate groups:   1
 Blind spots:        1
 Level mismatches:   2
+FP collisions:      1
+Missing context:    1
 ```
 
 Exit code `1` when issues found — use in CI to gate PRs.

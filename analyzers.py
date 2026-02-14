@@ -143,3 +143,68 @@ def detect_mismatches(calls: List[LogCall]) -> List[Mismatch]:
                 c, 'info', f'mild message logged at {c.level}'
             ))
     return results
+
+
+def detect_fingerprint_collisions(calls: List[LogCall]) -> List[List[LogCall]]:
+    """Find identical log messages appearing in multiple locations."""
+    from collections import defaultdict
+    by_message: dict = defaultdict(list)
+    for c in calls:
+        if c.message and c.message != '<dynamic>':
+            by_message[c.message].append(c)
+    return [group for group in by_message.values() if len(group) > 1]
+
+
+CONTEXT_IDENTIFIERS = {
+    'request_id', 'req_id', 'trace_id', 'span_id',
+    'user_id', 'uid', 'username',
+    'order_id', 'transaction_id', 'tx_id',
+    'session_id', 'correlation_id',
+}
+
+
+@dataclass
+class MissingContext:
+    log: LogCall
+    available: List[str]
+
+
+def detect_missing_context(
+    source: str, filepath: str, calls: List[LogCall]
+) -> List[MissingContext]:
+    """Find log calls that omit important context variables available in scope."""
+    tree = ast.parse(source)
+    results: List[MissingContext] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        scope_vars: set = set()
+        for arg in node.args.args + node.args.kwonlyargs:
+            if arg.arg in CONTEXT_IDENTIFIERS:
+                scope_vars.add(arg.arg)
+        for child in ast.walk(node):
+            if isinstance(child, ast.Assign):
+                for target in child.targets:
+                    if isinstance(target, ast.Name) and target.id in CONTEXT_IDENTIFIERS:
+                        scope_vars.add(target.id)
+        if not scope_vars:
+            continue
+        for call_node in ast.walk(node):
+            if not (
+                isinstance(call_node, ast.Call)
+                and isinstance(call_node.func, ast.Attribute)
+                and call_node.func.attr in LOG_METHODS
+            ):
+                continue
+            call_names = {
+                n.id for n in ast.walk(call_node) if isinstance(n, ast.Name)
+            }
+            missing = scope_vars - call_names
+            if missing:
+                matching = [
+                    c for c in calls
+                    if c.file == filepath and c.line == call_node.lineno
+                ]
+                if matching:
+                    results.append(MissingContext(matching[0], sorted(missing)))
+    return results

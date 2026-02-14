@@ -388,3 +388,103 @@ def test_sarif_end_to_end_three_rule_ids():
         phys = r["locations"][0]["physicalLocation"]
         assert "artifactLocation" in phys and "uri" in phys["artifactLocation"]
         assert "region" in phys and "startLine" in phys["region"]
+
+from analyzers import detect_fingerprint_collisions, detect_missing_context
+
+
+def test_fingerprint_collision_detects_identical_messages():
+    calls = [
+        LogCall('a.py', 10, 'handler_a', 'info', 'request processed', 'fp1'),
+        LogCall('b.py', 20, 'handler_b', 'info', 'request processed', 'fp2'),
+        LogCall('c.py', 30, 'handler_c', 'error', 'something else', 'fp3'),
+    ]
+    collisions = detect_fingerprint_collisions(calls)
+    assert len(collisions) == 1
+    assert len(collisions[0]) == 2
+    files = {c.file for c in collisions[0]}
+    assert files == {'a.py', 'b.py'}
+
+
+def test_fingerprint_collision_ignores_dynamic():
+    calls = [
+        LogCall('a.py', 10, 'f', 'info', '<dynamic>', 'fp1'),
+        LogCall('b.py', 20, 'g', 'info', '<dynamic>', 'fp2'),
+    ]
+    collisions = detect_fingerprint_collisions(calls)
+    assert len(collisions) == 0
+
+
+def test_fingerprint_collision_no_collision_when_unique():
+    calls = [
+        LogCall('a.py', 10, 'f', 'info', 'msg one', 'fp1'),
+        LogCall('b.py', 20, 'g', 'info', 'msg two', 'fp2'),
+    ]
+    collisions = detect_fingerprint_collisions(calls)
+    assert len(collisions) == 0
+
+
+def test_fingerprint_collision_three_way():
+    calls = [
+        LogCall('a.py', 1, 'f', 'info', 'saving data', 'fp1'),
+        LogCall('b.py', 2, 'g', 'info', 'saving data', 'fp2'),
+        LogCall('c.py', 3, 'h', 'info', 'saving data', 'fp3'),
+    ]
+    collisions = detect_fingerprint_collisions(calls)
+    assert len(collisions) == 1
+    assert len(collisions[0]) == 3
+
+
+def test_missing_context_detects_omitted_user_id():
+    code = '''
+import logging
+logger = logging.getLogger(__name__)
+
+def handle_request(request_id, user_id):
+    logger.info("processing request")
+'''
+    calls, _ = extract(code, 'ctx.py')
+    missing = detect_missing_context(code, 'ctx.py', calls)
+    assert len(missing) == 1
+    assert 'request_id' in missing[0].available
+    assert 'user_id' in missing[0].available
+
+
+def test_missing_context_passes_when_vars_included():
+    code = '''
+import logging
+logger = logging.getLogger(__name__)
+
+def handle_request(request_id):
+    logger.info("processing %s", request_id)
+'''
+    calls, _ = extract(code, 'ctx.py')
+    missing = detect_missing_context(code, 'ctx.py', calls)
+    assert len(missing) == 0
+
+
+def test_missing_context_detects_assigned_context_var():
+    code = '''
+import logging
+logger = logging.getLogger(__name__)
+
+def process():
+    trace_id = generate_trace()
+    logger.info("starting work")
+'''
+    calls, _ = extract(code, 'ctx.py')
+    missing = detect_missing_context(code, 'ctx.py', calls)
+    assert len(missing) == 1
+    assert 'trace_id' in missing[0].available
+
+
+def test_missing_context_ignores_non_context_params():
+    code = '''
+import logging
+logger = logging.getLogger(__name__)
+
+def process(amount, description):
+    logger.info("processing payment")
+'''
+    calls, _ = extract(code, 'ctx.py')
+    missing = detect_missing_context(code, 'ctx.py', calls)
+    assert len(missing) == 0
